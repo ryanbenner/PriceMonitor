@@ -39,7 +39,7 @@ jobs:
           subject: "price drop: $${{ steps.price.outputs.price }}"
           body: |
             now $${{ steps.price.outputs.price }} (target $${{ vars.TARGET_PRICE }})
-            ${{ vars.PRODUCT_URL }}
+            ${{ vars.PRODUCT_PAGE || vars.PRODUCT_URL }}
 
       # save alert state so you only get one email per drop
       - name: save state
