@@ -1,0 +1,50 @@
+name: price check
+
+on:
+  schedule:
+    # every hour at :17 (off the top of the hour to avoid queue delays)
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - id: price
+        run: node price-check.mjs
+        env:
+          PRODUCT_URL: ${{ vars.PRODUCT_URL }}
+          TARGET_PRICE: ${{ vars.TARGET_PRICE }}
+          PRICE_REGEX: ${{ vars.PRICE_REGEX }}
+
+      - if: steps.price.outputs.alert == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: Price Alert <${{ secrets.MAIL_USERNAME }}>
+          to: ${{ secrets.MAIL_TO }}
+          subject: "price drop: $${{ steps.price.outputs.price }}"
+          body: |
+            now $${{ steps.price.outputs.price }} (target $${{ vars.TARGET_PRICE }})
+            ${{ vars.PRODUCT_URL }}
+
+      # save alert state so you only get one email per drop
+      - name: save state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git diff --staged --quiet || (git commit -m "update price state" && git push)
