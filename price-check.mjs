@@ -4,6 +4,10 @@ const url = process.env.PRODUCT_URL;
 const target = parseFloat(process.env.TARGET_PRICE);
 // optional: regex whose first capture group is the price, for sites without structured data
 const priceRegex = process.env.PRICE_REGEX;
+// optional: same idea for shipping cost, if the page shows it but not in structured data
+const shippingRegex = process.env.SHIPPING_REGEX;
+// optional: fixed shipping cost to use when none can be found on the page
+const shippingFallback = parseFloat(process.env.SHIPPING_COST);
 const stateFile = "state.json";
 
 if (!url || isNaN(target)) {
@@ -16,7 +20,17 @@ function toNumber(v) {
   return isNaN(n) ? null : n;
 }
 
-// look for price in json-ld product data (lowPrice first, for marketplace listings)
+// cheapest shipping rate from an offer's shippingDetails, or null if it doesn't list any
+function shippingOf(offer) {
+  const rates = [offer.shippingDetails].flat()
+    .flatMap((d) => [d?.shippingRate].flat())
+    .map((r) => toNumber(r?.value ?? r?.price ?? ""))
+    .filter((n) => n != null);
+  return rates.length ? Math.min(...rates) : null;
+}
+
+// look for price + shipping in json-ld product data.
+// for marketplace listings (lowPrice) with individual offers, pick the cheapest offer by total
 function fromJsonLd(html) {
   const blocks = html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
   for (const [, raw] of blocks) {
@@ -28,7 +42,18 @@ function fromJsonLd(html) {
       if (!node || typeof node !== "object") continue;
       if (Array.isArray(node)) { stack.push(...node); continue; }
       const p = node.lowPrice ?? node.price;
-      if (p != null && toNumber(p) != null) return toNumber(p);
+      if (p != null && toNumber(p) != null) {
+        if (node.lowPrice != null) {
+          const offers = [node.offers].flat()
+            .filter((o) => o && toNumber(o.price ?? "") != null)
+            .map((o) => ({ price: toNumber(o.price), shipping: shippingOf(o) }));
+          if (offers.some((o) => o.shipping != null)) {
+            return offers.reduce((best, o) =>
+              o.price + (o.shipping ?? 0) < best.price + (best.shipping ?? 0) ? o : best);
+          }
+        }
+        return { price: toNumber(p), shipping: shippingOf(node) };
+      }
       stack.push(...Object.values(node));
     }
   }
@@ -55,12 +80,14 @@ if (!res.ok) {
 }
 const html = await res.text();
 
+const jsonLd = fromJsonLd(html);
+
 let price = null;
 if (priceRegex) {
   const m = html.match(new RegExp(priceRegex, "i"));
   price = m ? toNumber(m[1]) : null;
 } else {
-  price = fromJsonLd(html) ?? fromMeta(html);
+  price = jsonLd?.price ?? fromMeta(html);
 }
 
 // fail loudly so github sends a failure email instead of silently missing a drop
@@ -69,22 +96,36 @@ if (price == null) {
   process.exit(1);
 }
 
+// shipping: SHIPPING_REGEX, then json-ld, then SHIPPING_COST, then assume free
+let shipping = null;
+if (shippingRegex) {
+  const m = html.match(new RegExp(shippingRegex, "i"));
+  shipping = m ? toNumber(m[1]) : null;
+}
+shipping ??= jsonLd?.shipping ?? (isNaN(shippingFallback) ? null : shippingFallback);
+if (shipping == null) {
+  console.log("no shipping cost found, assuming free (set SHIPPING_COST or SHIPPING_REGEX to override)");
+  shipping = 0;
+}
+
+const total = Math.round((price + shipping) * 100) / 100;
+
 const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")) : { alertedAt: null };
 
-// alert once when price crosses below target, again only if it drops further
+// alert once when total crosses below target, again only if it drops further
 let alert = false;
-if (price < target) {
-  if (state.alertedAt == null || price < state.alertedAt) {
+if (total < target) {
+  if (state.alertedAt == null || total < state.alertedAt) {
     alert = true;
-    state.alertedAt = price;
+    state.alertedAt = total;
   }
 } else {
   state.alertedAt = null;
 }
 
 writeFileSync(stateFile, JSON.stringify(state, null, 2) + "\n");
-console.log(`price: ${price} target: ${target} alert: ${alert}`);
+console.log(`price: ${price} shipping: ${shipping} total: ${total} target: ${target} alert: ${alert}`);
 
 if (process.env.GITHUB_OUTPUT) {
-  appendFileSync(process.env.GITHUB_OUTPUT, `price=${price}\nalert=${alert}\n`);
+  appendFileSync(process.env.GITHUB_OUTPUT, `price=${price}\nshipping=${shipping}\ntotal=${total}\nalert=${alert}\n`);
 }
