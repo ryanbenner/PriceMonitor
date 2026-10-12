@@ -25,6 +25,8 @@ jobs:
           PRODUCT_URL: ${{ vars.PRODUCT_URL }}
           TARGET_PRICE: ${{ vars.TARGET_PRICE }}
           PRICE_REGEX: ${{ vars.PRICE_REGEX }}
+          SHIPPING_REGEX: ${{ vars.SHIPPING_REGEX }}
+          SHIPPING_COST: ${{ vars.SHIPPING_COST }}
 
       - if: steps.price.outputs.alert == 'true'
         uses: dawidd6/action-send-mail@v3
@@ -36,9 +38,9 @@ jobs:
           password: ${{ secrets.MAIL_PASSWORD }}
           from: Price Alert <${{ secrets.MAIL_USERNAME }}>
           to: ${{ secrets.MAIL_TO }}
-          subject: "price drop: $${{ steps.price.outputs.price }}"
+          subject: "price drop: $${{ steps.price.outputs.total }} shipped"
           body: |
-            now $${{ steps.price.outputs.price }} (target $${{ vars.TARGET_PRICE }})
+            now $${{ steps.price.outputs.total }} total ($${{ steps.price.outputs.price }} + $${{ steps.price.outputs.shipping }} shipping, target $${{ vars.TARGET_PRICE }})
             ${{ vars.PRODUCT_PAGE || vars.PRODUCT_URL }}
 
       # save alert state so you only get one email per drop
